@@ -9,6 +9,28 @@ Designed to be distro-portable — see Platform Support below.
 
 ---
 
+## Getting Started
+
+Download the bootstrap script and run it. It will clone the repo, create the
+`ai_tools` command, and walk you through first-time setup:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TrickBit/AI_TOOLS/main/ai_bootstrap.sh \
+    -o ai_bootstrap.sh
+bash ai_bootstrap.sh
+```
+
+Then run `ai_tools`.
+
+The script asks where to clone the repo (default: `~/bin/scripts/AI_Tools`),
+finds the right place on your PATH for the symlink, and optionally sets your
+target drive. Safe to re-run — if the repo is already there it skips the clone.
+
+**Requirements before bootstrapping:** `git` (hard requirement), plus `pyenv`
+and `nvidia-smi` for actual app installs (missing deps are flagged, not fatal).
+
+---
+
 ## What It Does
 
 Manages five AI applications as a coordinated stack:
