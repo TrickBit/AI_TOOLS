@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ai_comfy  —  ComfyUI runner for Jethro
+# =============================================================================
+# Purpose:
+#   Launch ComfyUI, wait for it to respond, then open Vivaldi.
+#   Checks that the RTX 3060 ops.py patch is in place before launching,
+#   and re-applies it if git pull has clobbered it.
+#   Ctrl+C cleanly stops the server.
+#
+# Pre:  ComfyUI installed (ai_comfyui_install.sh), venv present.
+# Post: ComfyUI server running on AI_PORT; browser opened.
+#
+# Usage:
+#   ai_comfy                    # normal launch
+#   ai_comfy --no-browser       # start server without opening Vivaldi
+# =============================================================================
+
+set -euo pipefail
+
+_THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${_THIS_DIR}/ai_config.sh"
+
+# =============================================================================
+# Paths
+# =============================================================================
+INSTALL_DIR="${AI_APPS}/ComfyUI"
+VENV_DIR="${INSTALL_DIR}/venv"
+VENV_PYTHON="${VENV_DIR}/bin/python"
+OPS_FILE="${INSTALL_DIR}/comfy/ops.py"
+PORT="${AI_PORT}"
+URL="http://127.0.0.1:${PORT}"
+
+NO_BROWSER=false
+[[ "${1:-}" == "--no-browser" ]] && NO_BROWSER=true
+
+# =============================================================================
+# Preflight checks
+# =============================================================================
+if [[ ! -f "${VENV_PYTHON}" ]]; then
+    echo "ERROR: ComfyUI not installed or venv missing."
+    echo "  Run: ai_comfyui_install.sh"
+    exit 1
+fi
+
+if [[ ! -f "${INSTALL_DIR}/main.py" ]]; then
+    echo "ERROR: ComfyUI main.py not found at ${INSTALL_DIR}."
+    echo "  Run: ai_comfyui_install.sh"
+    exit 1
+fi
+
+# =============================================================================
+# ops.py patch check
+# =============================================================================
+# Purpose: The RTX 3060 threshold patch in comfy/ops.py gets wiped by
+#   git pull. Detect this and re-apply before launching, so the user
+#   never has to think about it.
+# Pre:  OPS_FILE exists (enforced by the install check above).
+# Post: ops.py contains correct threshold value.
+# =============================================================================
+_check_ops_patch() {
+    if [[ ! -f "${OPS_FILE}" ]]; then
+        echo "  WARN: ops.py not found — skipping patch check"
+        return 0
+    fi
+
+    # Ground truth is the file itself — just grep it
+    if grep -q "1e-7" "${OPS_FILE}" 2>/dev/null; then
+        return 0
+    fi
+
+    # Patch missing (git pull wiped it)
+    echo ""
+    echo "  WARN: ops.py patch missing (probably wiped by git pull)"
+    echo "  Re-applying RTX 3060 threshold fix..."
+
+    if grep -q "1e-38" "${OPS_FILE}" 2>/dev/null; then
+        sed -i 's/1e-38/1e-7/g' "${OPS_FILE}"
+        echo "  OK: patch re-applied (1e-38 → 1e-7)"
+    else
+        echo "  WARN: Expected threshold value not found in ops.py"
+        echo "        ComfyUI may produce black/NaN output on this GPU"
+        echo "        Check: ${OPS_FILE}"
+    fi
+}
+
+# =============================================================================
+# Browser watcher
+# =============================================================================
+# Purpose: Background process that polls the server until it responds,
+#   then opens Vivaldi. Exits cleanly whether the server comes up or not.
+# Pre:  URL set, Vivaldi on PATH.
+# Post: Vivaldi opens with ComfyUI loaded.
+# =============================================================================
+_start_browser_watcher() {
+    [[ "${NO_BROWSER}" == true ]] && return 0
+    (
+        echo "Waiting for ComfyUI at ${URL}..."
+        for i in {1..180}; do
+            if curl -s --max-time 3 --head "${URL}" >/dev/null 2>&1; then
+                echo ""
+                echo "=== ComfyUI is up — opening Vivaldi ==="
+                vivaldi --new-window "${URL}" &
+                exit 0
+            fi
+            sleep 2
+        done
+        echo "Watcher timeout — server did not respond within 6 minutes"
+    ) &
+    echo "Browser watcher started (PID $!)"
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+_check_ops_patch
+
+cd "${INSTALL_DIR}"
+source "${VENV_DIR}/bin/activate"
+export HF_HOME
+
+echo ""
+echo "=== ComfyUI ==="
+echo "  Dir    : ${INSTALL_DIR}"
+echo "  Port   : ${PORT}"
+echo "  URL    : ${URL}"
+echo "  Ctrl+C to stop"
+echo ""
+
+_start_browser_watcher
+
+# Runs in foreground — Ctrl+C stops it
+exec "${VENV_PYTHON}" main.py \
+    --port "${PORT}" \
+    --listen 127.0.0.1

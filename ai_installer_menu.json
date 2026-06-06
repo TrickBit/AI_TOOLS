@@ -1,0 +1,81 @@
+{
+  "_comment": "AI Tools menu layout — edit to reorder, rename, or hide items. Do not add new item ids here without a matching entry in ITEM_REGISTRY in ai_installer.py.",
+  "_repo": "https://github.com/TrickBit/AI_TOOLS",
+
+  "context_tokens": [
+    "target",
+    "hostname",
+    "install_hint",
+    "probe_age_str",
+    "n_installed",
+    "drives"
+  ],
+
+  "menus": [
+
+    {
+      "id": "main",
+      "title": "Applications",
+      "back_label": "Quit",
+      "pre": null,
+      "post": null,
+      "sections": [
+        {
+          "label": "Run",
+          "detail": "start app, opens browser when ready",
+          "show_if": "has_any_app",
+          "items": "launch"
+        },
+        {
+          "label": "Stack",
+          "detail": null,
+          "show_if": "has_target",
+          "items": [
+            { "id": "status",    "label": "Full status",        "detail": "Versions, disk space, all targets", "show_if": "has_target"  },
+            { "id": "switch",    "label": "Switch target drive", "detail": "now: {target}",                    "show_if": "has_drives"  },
+            { "id": "migration", "label": "Run migration",       "detail": "Fix symlinks and output layout",   "show_if": "has_target"  }
+          ]
+        },
+        {
+          "label": "CMNT: no header — install entry sits on its own",
+          "detail": null,
+          "items": [
+            { "id": "install_menu", "label": "Install / manage apps  \u2192", "detail": "{install_hint}", "show_if": "always" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "install",
+      "title": "Installation",
+      "back_label": "Back",
+      "pre": null,
+      "post": null,
+      "sections": [
+        {
+          "label": "Apps",
+          "detail": "installs, updates, or rebuilds as needed",
+          "show_if": "always",
+          "items": "apps"
+        },
+        {
+          "label": "Batch",
+          "detail": "select apps to install, update or rebuild",
+          "show_if": "always",
+          "items": [
+            { "id": "batch", "label": "Batch install / update...", "detail": "Select apps to install, update or rebuild", "show_if": "always" },
+            { "id": "logs",  "label": "View install logs",         "detail": "Browse per-app and run logs",               "show_if": "has_any_app" }
+          ]
+        },
+        {
+          "label": "Post-install",
+          "detail": "optional extra setup — run anytime",
+          "show_if": "has_any_app",
+          "items": "postinstall"
+        }
+      ]
+    }
+
+  ]
+}

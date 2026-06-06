@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ai_automatic  —  Start AUTOMATIC1111 on Jethro
+# =============================================================================
+
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/ai_config.sh"
+
+WEBUI_DIR="${AI_APPS}/stable-diffusion-webui"
+PORT="${AI_PORT}"
+URL="http://127.0.0.1:${PORT}"
+
+export python_cmd="${HOME}/.pyenv/versions/${PYTHON_VER_AUTOMATIC}/bin/python3"
+export TORCH_COMMAND="pip install torch==2.4.1+cu121 torchvision==0.19.1+cu121 --index-url https://download.pytorch.org/whl/cu121"
+
+[[ ! -d "${WEBUI_DIR}" ]] && {
+    echo "ERROR: A1111 not found at ${WEBUI_DIR}"
+    echo "  Run ai_automatic_install.sh first."
+    exit 1
+}
+
+# A1111 opens its own browser — watcher available but commented out.
+# Uncomment start_browser_watcher call below if auto-open is ever disabled.
+start_browser_watcher() {
+    (
+        for i in {1..180}; do
+            curl -s --max-time 3 --head "${URL}" >/dev/null 2>&1 && {
+                echo "=== A1111 is up — opening Vivaldi ===";
+                vivaldi --new-window "${URL}" &
+                exit 0
+            }
+            sleep 2
+        done
+    ) &
+}
+# start_browser_watcher
+
+echo ""
+echo "=== AUTOMATIC1111 ==="
+echo "  Dir    : ${WEBUI_DIR}"
+echo "  Port   : ${PORT}"
+echo "  Ctrl+C to stop"
+echo ""
+
+cd "${WEBUI_DIR}"
+./webui.sh --port "${PORT}"

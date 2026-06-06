@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ai_frampackstudio  —  Start FramePack-Studio on Jethro
+# =============================================================================
+# Usage:
+#   ai_frampackstudio              # launch
+#   ai_frampackstudio --no-browser # skip browser open
+#   ai_frampackstudio --share      # create public HF share URL
+# Extra args passed through to the app entry point.
+# =============================================================================
+
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/ai_config.sh"
+
+INSTALL_DIR="${AI_APPS}/FramePack-Studio"
+VENV_DIR="${INSTALL_DIR}/venv"
+PORT="${AI_PORT}"
+
+# ---------------------------------------------------------------------------
+# Argument handling
+# ---------------------------------------------------------------------------
+OPEN_BROWSER=true
+EXTRA_ARGS=()
+for arg in "$@"; do
+    case "${arg}" in
+        --no-browser) OPEN_BROWSER=false ;;
+        --share)      EXTRA_ARGS+=("--share") ;;
+        *)            EXTRA_ARGS+=("${arg}") ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Sanity checks
+# ---------------------------------------------------------------------------
+[[ ! -d "${INSTALL_DIR}" ]] && {
+    echo "ERROR: FramePack-Studio not found at ${INSTALL_DIR}"
+    echo "  Run ai_frampackstudio_install.sh first."
+    exit 1
+}
+[[ ! -f "${VENV_DIR}/bin/python" ]] && {
+    echo "ERROR: venv not found. Run ai_frampackstudio_install.sh first."
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Detect entry point (varies by version)
+# ---------------------------------------------------------------------------
+ENTRY_POINT=""
+for candidate in demo.py app.py webui.py; do
+    [[ -f "${INSTALL_DIR}/${candidate}" ]] && { ENTRY_POINT="${candidate}"; break; }
+done
+[[ -z "${ENTRY_POINT}" ]] && {
+    echo "ERROR: No entry point found (demo.py / app.py / webui.py)"
+    echo "  Check ${INSTALL_DIR}"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Launch
+# ---------------------------------------------------------------------------
+cd "${INSTALL_DIR}"
+source "${VENV_DIR}/bin/activate"
+
+VENV_PYTHON_VER="$(python --version 2>&1 | awk '{print $2}')"
+
+echo ""
+echo "=== FramePack-Studio ==="
+echo "  Dir     : ${INSTALL_DIR}"
+echo "  Entry   : ${ENTRY_POINT}"
+echo "  Python  : ${VENV_PYTHON_VER}"
+echo "  Port    : ${PORT}"
+echo "  HF_HOME : ${HF_HOME}"
+echo "  Ctrl+C to stop"
+echo ""
+
+LAUNCH_ARGS=(--server-port "${PORT}" --server-name "localhost")
+[[ "${OPEN_BROWSER}" == true ]] && LAUNCH_ARGS+=("--open-browser")
+LAUNCH_ARGS+=("${EXTRA_ARGS[@]}")
+
+# Some versions use env vars instead of flags — try both
+python "${ENTRY_POINT}" "${LAUNCH_ARGS[@]}" 2>&1 || {
+    echo
+    echo "WARN: Launch failed with flags — retrying via environment variables..."
+    GRADIO_SERVER_PORT="${PORT}" \
+    GRADIO_SERVER_NAME="localhost" \
+    python "${ENTRY_POINT}" "${EXTRA_ARGS[@]}"
+}

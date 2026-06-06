@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ai_invokeai  —  InvokeAI runner for Jethro
+# =============================================================================
+# Starts InvokeAI, waits for it to respond, then opens Vivaldi.
+# Ctrl+C cleanly stops the server.
+# =============================================================================
+
+set -euo pipefail
+
+_THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${_THIS_DIR}/ai_config.sh"
+
+INSTALL_DIR="${AI_APPS}/invokeai"
+VENV_DIR="${INSTALL_DIR}/.venv"
+PORT=9090
+URL="http://127.0.0.1:${PORT}"
+
+# =============================================================================
+# Checks
+# =============================================================================
+if [[ ! -f "${VENV_DIR}/bin/python" ]]; then
+    echo "ERROR: InvokeAI not installed. Run: ai_invokeai_install.sh"
+    exit 1
+fi
+
+if [[ ! -f "${INSTALL_DIR}/invokeai.yaml" ]]; then
+    echo "ERROR: InvokeAI not configured. Run: ai_invokeai_install.sh"
+    exit 1
+fi
+
+# =============================================================================
+# Browser watcher — polls until server responds, then opens Vivaldi
+# =============================================================================
+_start_browser_watcher() {
+    (
+        echo "Waiting for InvokeAI at ${URL}..."
+        for i in {1..180}; do
+            if curl -s --max-time 3 --head "${URL}" >/dev/null 2>&1; then
+                echo ""
+                echo "=== InvokeAI is up — opening Vivaldi ==="
+                vivaldi --new-window "${URL}" &
+                exit 0
+            fi
+            sleep 2
+        done
+        echo "Watcher timeout — server did not respond within 6 minutes"
+    ) &
+    echo "Browser watcher started (PID $!)"
+}
+
+# =============================================================================
+# Launch
+# =============================================================================
+cd "${INSTALL_DIR}"
+source "${VENV_DIR}/bin/activate"
+export HF_HOME
+
+echo ""
+echo "=== InvokeAI ==="
+echo "  Dir   : ${INSTALL_DIR}"
+echo "  Port  : ${PORT}"
+echo "  URL   : ${URL}"
+echo "  Ctrl+C to stop"
+echo ""
+
+_start_browser_watcher
+
+# Runs in foreground — Ctrl+C stops it
+exec .venv/bin/invokeai-web \
+    --root "${INSTALL_DIR}"

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ai_wan2gp  —  Start Wan2GP on Jethro
+# =============================================================================
+# Usage:
+#   ai_wan2gp              # launch (opens browser automatically)
+#   ai_wan2gp --no-browser # skip browser open
+#   ai_wan2gp --share      # create public HF share URL
+# Extra args are passed through to wgp.py.
+# =============================================================================
+
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/ai_config.sh"
+
+INSTALL_DIR="${AI_APPS}/Wan2GP"
+VENV_DIR="${INSTALL_DIR}/venv"
+PORT="${AI_PORT}"
+
+# ---------------------------------------------------------------------------
+# Argument handling
+# ---------------------------------------------------------------------------
+OPEN_BROWSER=true
+EXTRA_ARGS=()
+
+for arg in "$@"; do
+    case "${arg}" in
+        --no-browser) OPEN_BROWSER=false ;;
+        *)            EXTRA_ARGS+=("${arg}") ;;
+    esac
+done
+
+BROWSER_FLAG=""
+[[ "${OPEN_BROWSER}" == true ]] && BROWSER_FLAG="--open-browser"
+
+# ---------------------------------------------------------------------------
+# Sanity checks
+# ---------------------------------------------------------------------------
+[[ ! -d "${INSTALL_DIR}" ]] && {
+    echo "ERROR: Wan2GP not found at ${INSTALL_DIR}"
+    echo "  Run ai_wan2gp_install.sh first."
+    exit 1
+}
+[[ ! -f "${VENV_DIR}/bin/python" ]] && {
+    echo "ERROR: venv not found. Run ai_wan2gp_install.sh first."
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Detect Python version and SageAttention version → attention flag
+# ---------------------------------------------------------------------------
+VENV_PYTHON_VER="$("${VENV_DIR}/bin/python" --version 2>&1 | awk '{print $2}')"
+
+if [[ "${VENV_PYTHON_VER}" == 3.10.* ]]; then
+    echo "WARN: venv is Python ${VENV_PYTHON_VER} (3.10.x)."
+    echo "  SageAttention 2.x, Nunchaku, and GGUF CUDA kernels require Python 3.11."
+    echo "  Run: ai_wan2gp_install.sh --rebuild   to upgrade."
+    ATTN_FLAG="sage"
+else
+    ATTN_FLAG=$(
+        "${VENV_DIR}/bin/python" -c "
+import sageattention
+v = getattr(sageattention, '__version__', '1.0.x')
+print('sage2' if v.startswith('2.') else 'sage')
+" 2>/dev/null || echo "sdpa"
+    )
+fi
+
+# ---------------------------------------------------------------------------
+# Launch
+# ---------------------------------------------------------------------------
+cd "${INSTALL_DIR}"
+source "${VENV_DIR}/bin/activate"
+
+echo ""
+echo "=== Wan2GP ==="
+echo "  Dir     : ${INSTALL_DIR}"
+echo "  Python  : ${VENV_PYTHON_VER}"
+echo "  Port    : ${PORT}"
+echo "  Attn    : ${ATTN_FLAG}"
+echo "  HF_HOME : ${HF_HOME}"
+echo "  Args    : ${EXTRA_ARGS[*]:-none}"
+echo "  Ctrl+C to stop"
+echo ""
+
+# Profile 4 = LowRAM_LowVRAM — correct for 12GB VRAM with 13-14B models.
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    python wgp.py \
+        --server-port "${PORT}" \
+        --server-name "localhost" \
+        --profile 4 \
+        --attention "${ATTN_FLAG}" \
+        ${BROWSER_FLAG} \
+        "${EXTRA_ARGS[@]}"
+else
+    python wgp.py \
+        --server-port "${PORT}" \
+        --server-name "localhost" \
+        --profile 4 \
+        --attention "${ATTN_FLAG}" \
+        ${BROWSER_FLAG}
+fi

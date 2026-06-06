@@ -1,0 +1,14 @@
+ai_installer.json
+logs/
+backups/
+__pycache__/
+*.pyc
+*.bak
+*.bak.*
+files.zip
+found.txt
+git_up.sh
+git_extra.sh
+mk_wheels.py
+collected.txt
+out.txt
