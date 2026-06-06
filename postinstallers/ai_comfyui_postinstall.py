@@ -8,9 +8,11 @@
 #     1. Clone or update custom nodes into ComfyUI custom_nodes/
 #     2. Download missing model files into the shared resource tree
 #     3. Hardlink models from shared tree into ComfyUI's own models/ dirs
-#     4. Write/merge extra_model_paths.yaml so ComfyUI can find shared models
-#     5. Symlink workflow JSONs into ComfyUI user workflows dir
-#     6. Record everything in ai_installer.json under "comfyui_workflows"
+#     4. Symlink workflow JSONs into ComfyUI user workflows dir
+#     5. Record everything in ai_installer.json under "comfyui_workflows"
+#
+# Also installs ComfyUI-Manager (comfyui_manager pip package) on first run
+# and adds --enable-manager to config.comfyui_flags in ai_installer.json.
 #
 # REPEATABILITY:
 #   Safe to re-run at any time. Files already present are skipped (not
@@ -104,7 +106,7 @@ def _get_paths():
         "custom_nodes":   str(app_dir / "custom_nodes"),
         "models_dir":     str(app_dir / "models"),
         "user_workflows": str(app_dir / "user" / "default" / "workflows"),
-        "yaml_file":      str(app_dir / "extra_model_paths.yaml"),
+        "yaml_file":      str(app_dir / "extra_model_paths.yaml"),  # obsolete — scheduled for removal
         "ini_file":       str(_HERE / "comfyui_workflows.ini"),  # beside script in postinstallers/
     }
 
@@ -672,19 +674,10 @@ def install_workflow_pack(wf_id: str, wf_def: dict, paths: dict):
         )
         wf_record["workflows"][wf_file["filename"]] = wf_status
 
-    # ── 4. Accumulate yaml entries across all installed packs ─────────────────
-    _step("extra_model_paths.yaml")
-    all_yaml = {}
-    # Gather from all previously installed packs
-    for other_id, other_rec in state.items():
-        if "yaml_entries" in other_rec:
-            all_yaml.update(other_rec["yaml_entries"])
-    # Add this pack's entries
-    all_yaml.update(wf_def["yaml"])
-    wf_record["yaml_entries"] = wf_def["yaml"]
-
-    write_yaml(all_yaml, paths["shared_video"], paths["yaml_file"])
-    wf_record["yaml_written"] = True
+    # ── 4. extra_model_paths.yaml — skipped ──────────────────────────────────
+    # Models are hardlinked into ComfyUI's own models/ dirs (step 2 above).
+    # We leave extra_model_paths.yaml alone — app configs are not our concern.
+    wf_record["yaml_written"] = False
 
     # ── 5. Save state ─────────────────────────────────────────────────────────
     wf_record["status"] = "installed"
@@ -767,6 +760,88 @@ def show_status(paths: dict):
                     print(f"      - {fname}")
 
 # =============================================================================
+# COMFYUI MANAGER
+# =============================================================================
+# =============================================================================
+# COMFYUI MANAGER
+# =============================================================================
+def install_manager(paths: dict) -> None:
+    """
+    Purpose: Install comfyui_manager and required extras into the ComfyUI venv,
+      and record --enable-manager in config.comfyui_flags so the runner picks it up.
+    Pre:  ComfyUI venv present, manager_requirements.txt in app_dir.
+    Post: comfyui_manager, matrix-nio, onnx installed; ai_installer.json updated.
+    Idempotent — safe to re-run.
+    """
+    _step("ComfyUI Manager")
+    app_dir  = Path(paths["app_dir"])
+    venv_pip = paths["venv_pip"]
+    req_file = app_dir / "manager_requirements.txt"
+
+    if not req_file.exists():
+        _warn(f"manager_requirements.txt not found at {req_file} — skipping")
+        return
+
+    # Check if already installed
+    try:
+        result = subprocess.run(
+            [venv_pip, "show", "comfyui_manager"],
+            capture_output=True, text=True
+        )
+        already = result.returncode == 0
+    except OSError:
+        already = False
+
+    if already:
+        _info("comfyui_manager already installed")
+    else:
+        _info("Installing comfyui_manager...")
+        try:
+            subprocess.run(
+                [venv_pip, "install", "-r", str(req_file)],
+                check=True
+            )
+            _good("comfyui_manager installed")
+        except subprocess.CalledProcessError as e:
+            _warn(f"comfyui_manager install failed (non-fatal): {e}")
+            return
+
+    # Extra packages needed by manager features and custom nodes
+    # matrix-nio: ComfyUI-Manager matrix sharing feature
+    # onnx:       WanVideoWrapper FantasyPortrait nodes
+    _pip_install_if_missing(venv_pip, "matrix-nio", "matrix_nio")
+    # _pip_install_if_missing(venv_pip, "onnx",       "onnx")
+    _pip_install_if_missing(venv_pip, "onnxruntime", "onnxruntime")
+    # Record --enable-manager in config.comfyui_flags if not already there
+    found, current = ai_config.get("config", "comfyui_flags")
+    if not found or "--enable-manager" not in current:
+        ai_config.set("config", "comfyui_flags", "--enable-manager")
+        _good("--enable-manager added to config.comfyui_flags")
+    else:
+        _info("--enable-manager already in config.comfyui_flags")
+
+
+def _pip_install_if_missing(venv_pip: str, pkg: str, import_name: str) -> None:
+    """Install a pip package if not already present. Non-fatal on failure."""
+    try:
+        result = subprocess.run(
+            [venv_pip, "show", import_name],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            _info(f"{pkg} already installed")
+            return
+    except OSError:
+        pass
+
+    _info(f"Installing {pkg}...")
+    try:
+        subprocess.run([venv_pip, "install", pkg], check=True)
+        _good(f"{pkg} installed")
+    except subprocess.CalledProcessError as e:
+        _warn(f"{pkg} install failed (non-fatal): {e}")
+
+# =============================================================================
 # MAIN
 # =============================================================================
 def main():
@@ -804,6 +879,9 @@ def main():
 
     # ── setup ────────────────────────────────────────────────────────────────
     if cmd == "setup":
+        # Manager first — independent of workflow packs
+        install_manager(paths)
+
         ini_path = paths["ini_file"]
         try:
             workflows = parse_ini(ini_path)

@@ -24,20 +24,27 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+import urllib.request
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import ai_config
+import ai_lib_github
+from packaging.version import Version, InvalidVersion
 
 # =============================================================================
 # Constants
 # =============================================================================
 
 SCRIPT_DIR  = Path(__file__).parent
+
+PROBE_CACHE_MAX_AGE_HOURS = 24
+SA_REPO = "thu-ml/SageAttention"
 
 # Driver major → (cuda_max string, torch cuda tag)
 # Ordered from highest to lowest. First match wins.
@@ -263,6 +270,246 @@ def probe_drives() -> list[dict]:
     # Sort: drives with AI dirs first, then alphabetically by mount
     drives.sort(key=lambda d: (0 if d["has_ai"] else 1, d["mount"]))
     return drives
+
+
+def _run_full(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
+    """Run a command, return (returncode, stdout, stderr). Returns (-1, '', err) on failure."""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        return -1, "", str(e)
+
+
+def _parse_torch_tag(tag: str) -> str | None:
+    """
+    Parse compact torch tags from wheel filenames to version strings.
+    'torch29' → '2.9',  'torch212' → '2.12',  'torch2120' → '2.12.0'
+    Returns None if not parseable.
+    """
+    if not tag or not tag.startswith("torch"):
+        return None
+    digits = tag[5:]
+    if not digits or not digits.isdigit() or len(digits) < 2:
+        return None
+    major = digits[0]
+    rest  = digits[1:]
+    if len(rest) == 1:
+        return f"{major}.{rest}"
+    # last digit '0' with 2+ remaining chars → minor=rest[:-1], patch=0
+    if rest[-1] == "0" and len(rest) >= 2:
+        return f"{major}.{int(rest[:-1])}.0"
+    return f"{major}.{int(rest)}"
+
+
+def _extract_torch_tag(wheel_name: str) -> str | None:
+    """Extract the first 'torchNNN' substring from a wheel filename, or None."""
+    m = re.search(r"(torch\d+)", wheel_name)
+    return m.group(1) if m else None
+
+
+def _extract_pkg_version(wheel_name: str) -> str | None:
+    """Extract version from wheel filename: 'sageattention-2.2.0+...' → '2.2.0'."""
+    m = re.match(r"[A-Za-z0-9_.\-]+-(\d+\.\d+\.\d+)", wheel_name)
+    return m.group(1) if m else None
+
+
+def _scan_wheels(wheels_dir: Path, pkg_prefix: str, abi: str) -> list[Path]:
+    """Return .whl files matching pkg_prefix and abi tag in wheels_dir."""
+    if not wheels_dir.is_dir():
+        return []
+    return [
+        p for p in wheels_dir.iterdir()
+        if p.suffix == ".whl"
+        and p.name.lower().startswith(pkg_prefix.lower())
+        and abi in p.name
+    ]
+
+
+def _probe_cache_is_fresh(cache: dict, current_driver: str) -> bool:
+    """Return True if probe_cache is < 24h old and driver is unchanged."""
+    ts = cache.get("torch_constraints_at")
+    if not ts:
+        return False
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
+        if age > timedelta(hours=PROBE_CACHE_MAX_AGE_HOURS):
+            return False
+    except ValueError:
+        return False
+    if current_driver and cache.get("driver") != current_driver:
+        return False
+    return True
+
+
+def _check_sa_venv(venv_python: Path) -> str:
+    """
+    Try importing sageattention in a venv python.
+    Returns: 'ok' | 'not_installed' | 'broken_symbol' | 'broken_import' | 'venv_missing'
+    """
+    if not venv_python.exists():
+        return "venv_missing"
+    rc, out, err = _run_full(
+        [str(venv_python), "-c", "import sageattention; print('ok')"], timeout=20
+    )
+    if rc == 0 and "ok" in out:
+        return "ok"
+    # Is it installed at all?
+    _, pip_out, _ = _run_full(
+        [str(venv_python), "-m", "pip", "show", "sageattention"], timeout=10
+    )
+    if "Name:" not in pip_out:
+        return "not_installed"
+    combined = (out + err).lower()
+    if "undefined symbol" in combined:
+        return "broken_symbol"
+    return "broken_import"
+
+
+def _sa_github_wheels(abi: str, cuda_tag: str) -> list[dict]:
+    """
+    Return list of {version, torch_str} for SA pre-built wheels matching abi
+    and cuda_tag from GitHub releases. Returns [] on any error.
+    """
+    results = []
+    try:
+        releases = ai_lib_github.get_releases(SA_REPO, count=5)
+        for rel in releases:
+            for asset in rel.get("assets", []):
+                name = asset.get("name", "")
+                if (name.endswith(".whl")
+                        and abi in name
+                        and cuda_tag in name
+                        and "sageattention" in name.lower()):
+                    ver   = _extract_pkg_version(name)
+                    torch = _parse_torch_tag(_extract_torch_tag(name))
+                    if ver:
+                        results.append({"version": ver, "torch_str": torch})
+    except Exception as e:
+        print(f"[probe] SA GitHub check failed: {e}", file=sys.stderr)
+    return results
+
+
+def _pypi_sa_latest() -> str | None:
+    """Return the latest SageAttention version on PyPI, or None on error."""
+    try:
+        req = urllib.request.Request(
+            "https://pypi.org/pypi/sageattention/json",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        return data.get("info", {}).get("version")
+    except Exception:
+        return None
+
+
+def probe_sage_flash_torch(config: dict, probe: dict, target: str = "") -> dict:
+    """
+    Probe SageAttention and flash-attn availability for cp312 (ComfyUI).
+
+    Checks (in order): probe_cache staleness, local wheel cache, GitHub releases,
+    PyPI. Checks SA health in the ComfyUI venv if it is installed.
+
+    Returns a probe_cache dict for writing to probe.probe_cache{} in JSON.
+    Never raises — errors are absorbed and reflected in returned values.
+    """
+    current_driver = probe.get("gpu", {}).get("driver", "")
+    torch_cuda     = probe.get("gpu", {}).get("torch_cuda", "")
+
+    existing_cache = ai_config.load_all().get("probe", {}).get("probe_cache", {})
+    if _probe_cache_is_fresh(existing_cache, current_driver):
+        return existing_cache
+
+    result: dict = {
+        "torch_constraints_at": datetime.now(timezone.utc).isoformat(),
+        "torch_cuda":           torch_cuda,
+        "driver":               current_driver,
+        "sage_max_torch":       None,
+        "flash_max_torch":      None,
+        "torch_candidate":      None,
+        "stepdown_needed":      False,
+        "stepdown_reason":      "",
+        "sa_comfyui_status":    "unknown",
+    }
+
+    wheels_drive = config.get("wheels_drive", "/mnt/BACKUP_4.0_TB")
+    cp312_dir    = Path(wheels_drive) / "AI_Collected_Wheels" / "localbuild" / "cp312"
+    abi          = "cp312"
+
+    # ── Wheel cache: flash_attn ───────────────────────────────────────────────
+    flash_max: str | None = None
+    for w in _scan_wheels(cp312_dir, "flash_attn", abi):
+        torch_str = _parse_torch_tag(_extract_torch_tag(w.name))
+        if torch_str and (flash_max is None
+                          or _ver(torch_str) > _ver(flash_max)):
+            flash_max = torch_str
+    result["flash_max_torch"] = flash_max
+
+    # ── Wheel cache: sageattention ────────────────────────────────────────────
+    cache_sa_torch: str | None = None
+    for w in _scan_wheels(cp312_dir, "sageattention", abi):
+        torch_str = _parse_torch_tag(_extract_torch_tag(w.name))
+        if torch_str and (cache_sa_torch is None
+                          or _ver(torch_str) > _ver(cache_sa_torch)):
+            cache_sa_torch = torch_str
+
+    # ── GitHub releases: sageattention ───────────────────────────────────────
+    gh_sa_torch: str | None = None
+    if torch_cuda:
+        gh_wheels = _sa_github_wheels(abi, torch_cuda)
+        if gh_wheels:
+            # pick the entry with the highest torch_str
+            for entry in gh_wheels:
+                ts = entry.get("torch_str")
+                if ts and (gh_sa_torch is None or _ver(ts) > _ver(gh_sa_torch)):
+                    gh_sa_torch = ts
+
+    # ── PyPI: note latest SA version (informational) ─────────────────────────
+    pypi_latest = _pypi_sa_latest()
+    if pypi_latest:
+        result["sage_pypi_latest"] = pypi_latest
+
+    # Best sage_max_torch: prefer GitHub pre-built (has explicit torch tag),
+    # then wheel cache, then None (can't determine)
+    sage_max = gh_sa_torch or cache_sa_torch
+    result["sage_max_torch"] = sage_max
+
+    # ── torch_candidate and stepdown_needed ──────────────────────────────────
+    constraints: list[tuple[str, str]] = []
+    if flash_max:
+        constraints.append(("flash_attn", flash_max))
+    if sage_max:
+        constraints.append(("sageattention", sage_max))
+
+    if constraints:
+        try:
+            min_pkg, min_ver = min(constraints, key=lambda x: _ver(x[1]))
+            result["torch_candidate"] = min_ver
+            result["stepdown_needed"] = True
+            result["stepdown_reason"] = "; ".join(
+                f"{pkg} wheel requires torch ≤ {ver}" for pkg, ver in constraints
+            )
+        except (InvalidVersion, ValueError):
+            pass
+
+    # ── SA venv health in ComfyUI ────────────────────────────────────────────
+    active_target = target or config.get("active_target", "")
+    apps_subdir   = config.get("apps_subdir", "AI_Apps")
+    if active_target:
+        venv_py = (Path(active_target) / apps_subdir
+                   / "ComfyUI" / "venv" / "bin" / "python")
+        result["sa_comfyui_status"] = _check_sa_venv(venv_py)
+
+    return result
+
+
+def _ver(version_str: str) -> Version:
+    """Parse version string; returns Version('0') on parse failure."""
+    try:
+        return Version(version_str)
+    except InvalidVersion:
+        return Version("0")
 
 
 def best_drive(drives: list[dict]) -> str | None:

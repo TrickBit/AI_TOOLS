@@ -888,7 +888,7 @@ def run_menu_by_id(menu_id: str, target: str, config: dict, probe: dict) -> None
                    .get("installed", {}).get(app, {}).get("status") == "ok"
         )
         actionable_states = {"fresh", "update", "rebuild_torch", "rebuild_python",
-                             "rebuild", "missing", "unknown"}
+                             "rebuild", "missing", "unknown", "sa_rebuild"}
         n_actionable = sum(
             1 for app in ALL_APPS
             if app_states.get(app, {}).get("state", "unknown") in actionable_states
@@ -966,12 +966,12 @@ def run_menu_by_id(menu_id: str, target: str, config: dict, probe: dict) -> None
                     except (EOFError, KeyboardInterrupt):
                         pass
                 continue
-
-        warn(f"Enter a number 1–{len(items)} or q.")
-        try:
-            input("  Press Enter to continue...")
-        except (EOFError, KeyboardInterrupt):
-            pass
+        if choice:  # ignore bare Enter — just redraw
+            warn(f"Enter a number 1–{len(items)} or q.")
+            try:
+                input("  Press Enter to continue...")
+            except (EOFError, KeyboardInterrupt):
+                pass
 
     # Post-hook
     post_hook_name = menu_cfg.get("post")
@@ -985,8 +985,39 @@ def run_menu_by_id(menu_id: str, target: str, config: dict, probe: dict) -> None
 # Pre/post hook registry — name → callable(target, config, probe)
 # To add a hook: one entry here, reference by name in ai_installer_menu.json.
 # =============================================================================
+def probe_torch_constraints(target: str, config: dict, probe: dict) -> None:
+    """
+    Pre-hook for the install menu.
+    Probes SageAttention/flash-attn torch constraints for cp312 (ComfyUI).
+    Fast when cached (< 24h, driver unchanged); runs network probe when stale.
+    Writes result to probe.probe_cache{} in JSON for bash installers to read.
+    """
+    existing = ai_config.load_all().get("probe", {}).get("probe_cache", {})
+    current_driver = probe.get("gpu", {}).get("driver", "")
+
+    from datetime import timedelta
+    ts = existing.get("torch_constraints_at")
+    is_fresh = False
+    if ts:
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
+            is_fresh = (age < timedelta(hours=24)
+                        and existing.get("driver") == current_driver)
+        except ValueError:
+            pass
+
+    if not is_fresh:
+        info("Probing SA/flash-attn torch constraints...")
+
+    try:
+        cache = ai_lib_probe.probe_sage_flash_torch(config, probe, target)
+        ai_config.write_probe_cache(cache)
+    except Exception as e:
+        warn(f"probe_torch_constraints failed: {e}")
+
+
 _PRE_POST_REGISTRY: dict[str, Callable] = {
-    # "probe_torch_constraints": probe_torch_constraints,   # session 18+
+    "probe_torch_constraints": probe_torch_constraints,
 }
 
 # =============================================================================
@@ -1021,6 +1052,53 @@ def dispatch_app(app: str, state: dict) -> None:
             return
         if confirm == "y":
             _run_installer(app)
+    elif app_state == "sa_rebuild":
+        print()
+        info("SageAttention in ComfyUI venv is broken and needs a rebuild.")
+        warn(state.get("reason", ""))
+        try:
+            confirm = input("  Rebuild SageAttention now? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if confirm != "y":
+            return
+        venv_python = state.get("venv_python")
+        if not venv_python:
+            err("No venv python found — cannot rebuild SA.")
+            return
+        info("Uninstalling old SageAttention...")
+        print()
+        try:
+            subprocess.run(
+                [venv_python, "-m", "pip", "uninstall", "sageattention", "-y"],
+                env={**os.environ}
+            )
+            print()
+            info("Building SageAttention 2.0.1...")
+            print()
+            result = subprocess.run(
+                [venv_python, "-m", "pip", "install", "sageattention==2.0.1",
+                 "--no-build-isolation"],
+                env={**os.environ}
+            )
+            print()
+            if result.returncode == 0:
+                good("SageAttention rebuild complete.")
+                _collect_wheels_from_venv("comfyui")
+                _data   = ai_config.load_all()
+                _cfg    = _data.get("config", {})
+                _prb    = _data.get("probe", {})
+                _tgt    = _cfg.get("active_target", "")
+                try:
+                    cache = ai_lib_probe.probe_sage_flash_torch(_cfg, _prb, _tgt)
+                    ai_config.write_probe_cache(cache)
+                    info("SA probe cache updated.")
+                except Exception as e:
+                    warn(f"Could not update probe cache: {e}")
+            else:
+                err(f"SageAttention rebuild failed (exit {result.returncode}).")
+        except OSError as e:
+            err(f"Could not rebuild SageAttention: {e}")
     else:
         warn(f"Unknown state '{app_state}' for {app} — nothing to do.")
 
@@ -1241,6 +1319,7 @@ _ACTION_LABELS = {
     "rebuild_torch":  "Rebuild torch",
     "rebuild_python": "Rebuild",
     "rebuild":        "Rebuild",
+    "sa_rebuild":     "Rebuild SA",
     "current":        "Up to date",
     "ok":             "Up to date",
     "unknown":        "Install",
@@ -1255,7 +1334,7 @@ def batch_install(app_states: dict) -> None:
     """
     from ai_lib_apps import APP_REGISTRY
 
-    ACTIONABLE = {"fresh", "update", "rebuild_torch", "rebuild_python", "rebuild", "missing", "unknown"}
+    ACTIONABLE = {"fresh", "update", "rebuild_torch", "rebuild_python", "rebuild", "missing", "unknown", "sa_rebuild"}
     fresh_system = all(
         app_states.get(a, {}).get("state", "unknown") in ("unknown", "fresh", "missing")
         for a in ALL_APPS

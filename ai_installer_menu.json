@@ -50,7 +50,7 @@
       "id": "install",
       "title": "Installation",
       "back_label": "Back",
-      "pre": null,
+      "pre": "probe_torch_constraints",
       "post": null,
       "sections": [
         {

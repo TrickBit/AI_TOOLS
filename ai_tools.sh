@@ -86,6 +86,11 @@ EOF
 # =============================================================================
 _no_args() {
     _help
+    echo "  run:  ai_tools menu    for the interactive menu"
+    echo
+}
+old_no_args() {
+    _help
     printf 'Drop to a CLI prompt or open the interactive menu? [1=cli  2=menu]  '
     local key
     IFS= read -r -s -n1 key

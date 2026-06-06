@@ -79,6 +79,7 @@ LAUNCH_ARGS=(--server-port "${PORT}" --server-name "localhost")
 LAUNCH_ARGS+=("${EXTRA_ARGS[@]}")
 
 # Some versions use env vars instead of flags — try both
+echo "  cmd: python ${ENTRY_POINT} ${LAUNCH_ARGS[*]}"
 python "${ENTRY_POINT}" "${LAUNCH_ARGS[@]}" 2>&1 || {
     echo
     echo "WARN: Launch failed with flags — retrying via environment variables..."

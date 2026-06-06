@@ -168,6 +168,17 @@ def get_latest_commit(owner_repo: str, branch: str = "master") -> str | None:
     return sha[:8]
 
 
+def get_releases(owner_repo: str, count: int = 5) -> list[dict]:
+    """
+    Return up to `count` recent releases for a repo.
+    Each dict contains tag_name and assets (list of {name, browser_download_url}).
+    Returns empty list on error.
+    """
+    url  = f"{_API_BASE}/repos/{owner_repo}/releases?per_page={count}"
+    data = _get(url)
+    return data if isinstance(data, list) else []
+
+
 def get_release_assets(owner_repo: str) -> list[str]:
     """
     Return a list of asset filenames from the latest release of a repo.

@@ -67,5 +67,6 @@ echo ""
 _start_browser_watcher
 
 # Runs in foreground — Ctrl+C stops it
+echo "  cmd: ${INSTALL_DIR}/.venv/bin/invokeai-web --root ${INSTALL_DIR}"
 exec .venv/bin/invokeai-web \
     --root "${INSTALL_DIR}"

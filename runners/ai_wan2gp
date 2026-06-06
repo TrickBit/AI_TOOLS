@@ -85,6 +85,7 @@ echo ""
 
 # Profile 4 = LowRAM_LowVRAM — correct for 12GB VRAM with 13-14B models.
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    echo "  cmd: python wgp.py --server-port ${PORT} --server-name localhost --profile 4 --attention ${ATTN_FLAG} ${BROWSER_FLAG} ${EXTRA_ARGS[*]}"
     python wgp.py \
         --server-port "${PORT}" \
         --server-name "localhost" \
@@ -93,6 +94,7 @@ if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
         ${BROWSER_FLAG} \
         "${EXTRA_ARGS[@]}"
 else
+    echo "  cmd: python wgp.py --server-port ${PORT} --server-name localhost --profile 4 --attention ${ATTN_FLAG} ${BROWSER_FLAG}"
     python wgp.py \
         --server-port "${PORT}" \
         --server-name "localhost" \

@@ -46,10 +46,11 @@ from pathlib import Path
 # =============================================================================
 
 SCRIPT_DIR = Path(__file__).parent
+_AI_TOOLS  = SCRIPT_DIR.parent   # pylib/ is one level below AI_Tools/
 
 def _json_path() -> Path:
     env = os.environ.get("AI_INSTALLER_JSON")
-    return Path(env) if env else SCRIPT_DIR / "ai_installer.json"
+    return Path(env) if env else _AI_TOOLS / "ai_installer.json"
 
 
 # =============================================================================
@@ -106,6 +107,17 @@ def _skeleton() -> dict:
                 "hostname": None,
             },
             "drives": [],
+            "probe_cache": {
+                "torch_constraints_at": None,
+                "torch_cuda":           None,
+                "driver":               None,
+                "sage_max_torch":       None,
+                "flash_max_torch":      None,
+                "torch_candidate":      None,
+                "stepdown_needed":      None,
+                "stepdown_reason":      "",
+                "sa_comfyui_status":    None,
+            },
         },
         "targets": {},
     }
@@ -391,6 +403,16 @@ def record_wheel_build(pkg: str, *,
     return _save(new_data)
 
 
+def write_probe_cache(cache: dict) -> bool:
+    """
+    Write (replace) the probe.probe_cache{} section.
+    Called by ai_installer.py probe_torch_constraints hook.
+    """
+    data     = _load()
+    new_data = _bury(data, ["probe", "probe_cache"], cache)
+    return _save(new_data)
+
+
 def write_probe(probe: dict) -> bool:
     """
     Replace the entire probe section with new data.
@@ -434,17 +456,22 @@ def save_all(data: dict) -> bool:
 
 def _cli_get(args: list[str]) -> int:
     """
-    get <scope> <key...> [--default <value>]
+    get <scope> <key...> [--default <value>] [--bash]
     Prints value to stdout.
+    --bash: format lists as space-separated string (safe for bash variable capture).
     Exit 0 if found, 1 if not found (default printed and exit 0 if --default given).
     """
-    default     = None
-    clean_args  = []
+    default    = None
+    bash_mode  = False
+    clean_args = []
     i = 0
     while i < len(args):
         if args[i] == "--default" and i + 1 < len(args):
             default = args[i + 1]
             i += 2
+        elif args[i] == "--bash":
+            bash_mode = True
+            i += 1
         else:
             clean_args.append(args[i])
             i += 1
@@ -458,7 +485,16 @@ def _cli_get(args: list[str]) -> int:
 
     found, value = get(scope, *keys)
     if found:
-        print(value)
+        if bash_mode and value.startswith("["):
+            # List value — join as space-separated for safe bash variable capture
+            import ast
+            try:
+                items = ast.literal_eval(value)
+                print(" ".join(str(i) for i in items) if isinstance(items, list) else value)
+            except (ValueError, SyntaxError):
+                print(value)
+        else:
+            print(value)
         return 0
     if default is not None:
         print(default)
@@ -516,6 +552,7 @@ def _cli_record_wheel_build(args: list[str]) -> int:
 
 
 
+def _cli_help() -> int:
     print("""
 ai_config.py — JSON API gateway for ai_installer.json
 

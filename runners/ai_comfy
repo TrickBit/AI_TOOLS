@@ -58,31 +58,35 @@ fi
 # Pre:  OPS_FILE exists (enforced by the install check above).
 # Post: ops.py contains correct threshold value.
 # =============================================================================
-_check_ops_patch() {
-    if [[ ! -f "${OPS_FILE}" ]]; then
-        echo "  WARN: ops.py not found — skipping patch check"
-        return 0
-    fi
-
-    # Ground truth is the file itself — just grep it
-    if grep -q "1e-7" "${OPS_FILE}" 2>/dev/null; then
-        return 0
-    fi
-
-    # Patch missing (git pull wiped it)
-    echo ""
-    echo "  WARN: ops.py patch missing (probably wiped by git pull)"
-    echo "  Re-applying RTX 3060 threshold fix..."
-
-    if grep -q "1e-38" "${OPS_FILE}" 2>/dev/null; then
-        sed -i 's/1e-38/1e-7/g' "${OPS_FILE}"
-        echo "  OK: patch re-applied (1e-38 → 1e-7)"
-    else
-        echo "  WARN: Expected threshold value not found in ops.py"
-        echo "        ComfyUI may produce black/NaN output on this GPU"
-        echo "        Check: ${OPS_FILE}"
-    fi
-}
+# NOTE:
+# ops.py threshold patch obsolete since ComfyUI 0.24 — NaN/black output on RTX 3060
+# now handled upstream via dtype selection policy and modern SDPA kernels.
+#
+# _check_ops_patch() {
+#     if [[ ! -f "${OPS_FILE}" ]]; then
+#         echo "  WARN: ops.py not found — skipping patch check"
+#         return 0
+#     fi
+#
+#     # Ground truth is the file itself — just grep it
+#     if grep -q "1e-7" "${OPS_FILE}" 2>/dev/null; then
+#         return 0
+#     fi
+#
+#     # Patch missing (git pull wiped it)
+#     echo ""
+#     echo "  WARN: ops.py patch missing (probably wiped by git pull)"
+#     echo "  Re-applying RTX 3060 threshold fix..."
+#
+#     if grep -q "1e-38" "${OPS_FILE}" 2>/dev/null; then
+#         sed -i 's/1e-38/1e-7/g' "${OPS_FILE}"
+#         echo "  OK: patch re-applied (1e-38 → 1e-7)"
+#     else
+#         echo "  WARN: Expected threshold value not found in ops.py"
+#         echo "        ComfyUI may produce black/NaN output on this GPU"
+#         echo "        Check: ${OPS_FILE}"
+#     fi
+# }
 
 # =============================================================================
 # Browser watcher
@@ -113,7 +117,7 @@ _start_browser_watcher() {
 # =============================================================================
 # Main
 # =============================================================================
-_check_ops_patch
+
 
 cd "${INSTALL_DIR}"
 source "${VENV_DIR}/bin/activate"
@@ -129,7 +133,14 @@ echo ""
 
 _start_browser_watcher
 
+# Read any extra launch flags from ai_installer.json config
+# e.g. --enable-manager written by ai_comfyui_postinstall.py
+# --bash ensures lists are returned as space-separated strings
+COMFY_EXTRA_FLAGS="$(python3 "${_THIS_DIR}/pylib/ai_config.py" get config comfyui_flags --bash --default "" 2>/dev/null || true)"
+
 # Runs in foreground — Ctrl+C stops it
+echo "  cmd: ${VENV_PYTHON} main.py --port ${PORT} --listen 127.0.0.1 ${COMFY_EXTRA_FLAGS}"
 exec "${VENV_PYTHON}" main.py \
     --port "${PORT}" \
-    --listen 127.0.0.1
+    --listen 127.0.0.1 \
+    ${COMFY_EXTRA_FLAGS}

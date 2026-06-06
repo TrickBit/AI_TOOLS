@@ -213,6 +213,7 @@ def detect_app_state(
     system_cuda: str,
     ai_apps_dir: Path,
     probe_torch: bool = False,
+    probe_cache: dict | None = None,
 ) -> dict:
     """
     Detect the current state of one app.
@@ -338,11 +339,21 @@ def detect_app_state(
                     "git": git_info}
 
     # -------------------------------------------------------------------------
-    # 5. All good
+    # 5. SageAttention health (ComfyUI only)
+    # -------------------------------------------------------------------------
+    if app == "comfyui" and probe_cache:
+        sa_status = probe_cache.get("sa_comfyui_status")
+        if sa_status in ("broken_symbol", "broken_import"):
+            git_info = git_local_info(app_dir)
+            return {**base, "state": "sa_rebuild", "label": "Rebuild SA",
+                    "reason": "SageAttention broken — needs rebuild against current torch",
+                    "git": git_info}
+
+    # -------------------------------------------------------------------------
+    # 6. All good
     # -------------------------------------------------------------------------
     git_info = git_local_info(app_dir) if reg["git_based"] else {"hash": None, "date": None}
-    return {**base, "state": "update", "label": "Update",
-            "reason": "", "git": git_info}
+    return {**base, "state": "ok", "label": "Up to date", "reason": "", "git": git_info}
 
 # =============================================================================
 # Main
@@ -379,6 +390,7 @@ def run(
     installed_db = config.get("_installed", {})   # pre-extracted by caller
 
     results: dict = {"probed_at": datetime.now(timezone.utc).isoformat()}
+    probe_cache  = probe.get("probe_cache", {})
 
     for app in apps:
         reg = APP_REGISTRY.get(app)
@@ -392,7 +404,8 @@ def run(
         try:
             state = detect_app_state(
                 app, reg, installed, cfg_python,
-                system_cuda, ai_apps_dir, probe_torch
+                system_cuda, ai_apps_dir, probe_torch,
+                probe_cache=probe_cache
             )
         except Exception as e:
             print(f"[apps] ERROR detecting state for {app}: {e}", file=sys.stderr)
