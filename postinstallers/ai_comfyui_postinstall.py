@@ -644,6 +644,8 @@ def install_workflow_pack(wf_id: str, wf_def: dict, paths: dict):
         node_status = install_node(node, paths["custom_nodes"], paths["venv_pip"])
         wf_record["nodes"][node["dirname"]] = node_status
 
+    apply_patches(paths)
+
     # ── 2. Models — download + hardlink ──────────────────────────────────────
     _step("Models")
     for model in wf_def["models"]:
@@ -811,7 +813,8 @@ def install_manager(paths: dict) -> None:
     # onnx:       WanVideoWrapper FantasyPortrait nodes
     _pip_install_if_missing(venv_pip, "matrix-nio", "matrix_nio")
     # _pip_install_if_missing(venv_pip, "onnx",       "onnx")
-    _pip_install_if_missing(venv_pip, "onnxruntime", "onnxruntime")
+    _pip_install_if_missing(venv_pip, "onnx",        "onnx")
+    _pip_install_if_missing(venv_pip, "onnxruntime",  "onnxruntime")
     # Record --enable-manager in config.comfyui_flags if not already there
     found, current = ai_config.get("config", "comfyui_flags")
     if not found or "--enable-manager" not in current:
@@ -840,6 +843,57 @@ def _pip_install_if_missing(venv_pip: str, pkg: str, import_name: str) -> None:
         _good(f"{pkg} installed")
     except subprocess.CalledProcessError as e:
         _warn(f"{pkg} install failed (non-fatal): {e}")
+
+# =============================================================================
+# SOURCE PATCHES — applied after every custom node clone/pull
+# =============================================================================
+# Patch strings use exact content; idempotent check is "before not in file".
+# Add more entries to apply_patches() as needed.
+
+_KORNIA_BEFORE = (
+    "from kornia.geometry.transform.pyramid import (\n"
+    "    PyrUp,\n"
+    "    build_laplacian_pyramid,\n"
+    "    build_pyramid,\n"
+    "    find_next_powerof_two,\n"
+    "    is_powerof_two,\n"
+    "    pad,\n"
+    ")"
+)
+_KORNIA_AFTER = (
+    "from kornia.geometry.transform.pyramid import (\n"
+    "    PyrUp,\n"
+    "    build_laplacian_pyramid,\n"
+    "    build_pyramid,\n"
+    "    find_next_powerof_two,\n"
+    "    is_powerof_two,\n"
+    ")\n"
+    "from torch.nn.functional import pad  # kornia removed pad in 0.8.3"
+)
+
+
+def apply_patches(paths: dict) -> None:
+    """
+    Apply post-git-pull source patches to custom nodes. Idempotent, non-fatal.
+    Called after every node install/update so patches survive git pull.
+    """
+    _step("Applying patches")
+
+    # ComfyUI-LTXVideo/pyramid_blending.py — kornia removed pad in 0.8.3
+    target = (Path(paths["custom_nodes"])
+              / "ComfyUI-LTXVideo" / "pyramid_blending.py")
+    if not target.exists():
+        _info("pyramid_blending.py: not found (ComfyUI-LTXVideo not installed — skip)")
+        return
+
+    content = target.read_text()
+    if _KORNIA_BEFORE not in content:
+        _info("pyramid_blending.py: already patched")
+        return
+
+    target.write_text(content.replace(_KORNIA_BEFORE, _KORNIA_AFTER, 1))
+    _good("pyramid_blending.py: patched (kornia pad → torch.nn.functional)")
+
 
 # =============================================================================
 # MAIN

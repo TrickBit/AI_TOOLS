@@ -44,7 +44,9 @@ from packaging.version import Version, InvalidVersion
 SCRIPT_DIR  = Path(__file__).parent
 
 PROBE_CACHE_MAX_AGE_HOURS = 24
-SA_REPO = "thu-ml/SageAttention"
+COMPAT_CACHE_MAX_AGE_DAYS = 7
+SA_REPO    = "thu-ml/SageAttention"
+FLASH_REPO = "Dao-AILab/flash-attention"
 
 # Driver major → (cuda_max string, torch cuda tag)
 # Ordered from highest to lowest. First match wins.
@@ -314,6 +316,18 @@ def _extract_pkg_version(wheel_name: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _extract_abi_tag(wheel_name: str) -> str | None:
+    """Extract python ABI tag from wheel filename: 'pkg-ver-cp312-cp312-...' → 'cp312'."""
+    m = re.search(r"-(cp\d+)-cp\d+-", wheel_name)
+    return m.group(1) if m else None
+
+
+def _extract_cuda_local(wheel_name: str) -> str | None:
+    """Extract cuda tag from wheel local version segment: '...+cu130...' → 'cu130'."""
+    m = re.search(r"\+(cu\d+)", wheel_name)
+    return m.group(1) if m else None
+
+
 def _scan_wheels(wheels_dir: Path, pkg_prefix: str, abi: str) -> list[Path]:
     """Return .whl files matching pkg_prefix and abi tag in wheels_dir."""
     if not wheels_dir.is_dir():
@@ -521,6 +535,198 @@ def best_drive(drives: list[dict]) -> str | None:
     if len(with_ai) == 1:
         return with_ai[0]["mount"]
     return None     # ambiguous or none — conductor will prompt
+
+
+def _compat_cache_is_fresh(cache: dict) -> bool:
+    """Return True if compat_cache is less than COMPAT_CACHE_MAX_AGE_DAYS old."""
+    ts = cache.get("fetched_at")
+    if not ts:
+        return False
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(ts)
+        return age < timedelta(days=COMPAT_CACHE_MAX_AGE_DAYS)
+    except ValueError:
+        return False
+
+
+def _pip_dry_run(venv_python: Path, packages: list[str],
+                 extra_index: str = "") -> dict:
+    """
+    Run pip install --dry-run via a temp-file report.
+    Returns {resolved_at, packages: {name: version}} or {error: str}.
+    Uses a temp file to avoid stdout contamination from pip progress output.
+    """
+    report_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            report_path = f.name
+        cmd = [str(venv_python), "-m", "pip", "install",
+               "--dry-run", f"--report={report_path}", "-q"] + packages
+        if extra_index:
+            cmd += ["--extra-index-url", extra_index]
+        rc, _, err_out = _run_full(cmd, timeout=120)
+        if rc != 0:
+            return {"error": (err_out or "pip dry-run failed")[:300]}
+        with open(report_path) as fh:
+            parsed = json.loads(fh.read())
+        pkgs: dict[str, str] = {}
+        for item in parsed.get("install", []):
+            meta = item.get("metadata", {})
+            name = (meta.get("name") or "").lower().replace("-", "_")
+            ver  = meta.get("version") or ""
+            if name and ver:
+                pkgs[name] = ver
+        return {
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "packages":    pkgs,
+        }
+    except Exception as e:
+        return {"error": str(e)[:300]}
+    finally:
+        if report_path:
+            Path(report_path).unlink(missing_ok=True)
+
+
+def fetch_compat_data(config: dict, probe: dict) -> dict:
+    """
+    Fetch SA and flash-attn compatibility data from GitHub releases.
+    Runs pip dry-runs for key ComfyUI install scenarios.
+
+    Returns a compat_cache dict for writing via ai_config.write_compat_cache().
+    Non-fatal throughout — errors are absorbed and reflected in partial results.
+    Staleness check (7 days) is the caller's responsibility.
+    """
+    torch_cuda  = probe.get("gpu", {}).get("torch_cuda", "cu130")
+    torch_index = probe.get("gpu", {}).get(
+        "torch_index", f"https://download.pytorch.org/whl/{torch_cuda}"
+    )
+
+    result: dict = {
+        "fetched_at":  datetime.now(timezone.utc).isoformat(),
+        "available":   {"sageattention": {}, "flash_attn": {}},
+        "pip_dry_runs": {},
+    }
+
+    # ── SA versions from GitHub releases ─────────────────────────────────────
+    try:
+        releases = ai_lib_github.get_releases(SA_REPO, count=10)
+        for rel in releases:
+            tag = rel.get("tag_name", "").lstrip("v")
+            if not tag:
+                continue
+            pre_built: list[str] = []
+            max_torch_sa: str | None = None
+            for asset in rel.get("assets", []):
+                name = asset.get("name", "")
+                if not (name.endswith(".whl") and "sageattention" in name.lower()):
+                    continue
+                abi  = _extract_abi_tag(name)
+                cuda = _extract_cuda_local(name)
+                if abi and cuda:
+                    pre_built.append(f"{abi}+{cuda}")
+                ts = _parse_torch_tag(_extract_torch_tag(name))
+                if ts and (max_torch_sa is None or _ver(ts) > _ver(max_torch_sa)):
+                    max_torch_sa = ts
+            result["available"]["sageattention"][tag] = {
+                "max_torch": max_torch_sa,
+                "pre_built": list(dict.fromkeys(pre_built)),
+            }
+    except Exception as e:
+        print(f"[probe] fetch_compat_data SA releases failed: {e}", file=sys.stderr)
+
+    # ── SA versions from GitHub tags — check local cache for tag-based wheels ─
+    # SA distributed tag-based wheels (e.g. 2.2.0) as local assets, not GitHub
+    # release assets, so get_release_by_tag returns 404. Use local wheel cache
+    # instead — what we have tells us what exists and what ABI/cuda it targets.
+    try:
+        wheels_drive = config.get("wheels_drive", "/mnt/BACKUP_4.0_TB")
+        localbuild   = Path(wheels_drive) / "AI_Collected_Wheels" / "localbuild"
+        abi_dirs: list[Path] = (
+            [d for d in localbuild.iterdir() if d.is_dir() and d.name.startswith("cp")]
+            if localbuild.is_dir() else []
+        )
+        tags = ai_lib_github.get_tags(SA_REPO, count=20)
+        for tag_obj in tags:
+            raw_tag = tag_obj.get("name", "")
+            ver = raw_tag.lstrip("v")
+            if not ver or ver in result["available"]["sageattention"]:
+                continue
+            pre_built = []
+            max_torch_sa = None
+            for abi_dir in abi_dirs:
+                for w in _scan_wheels(abi_dir, "sageattention", ""):
+                    if ver not in w.name:
+                        continue
+                    abi  = _extract_abi_tag(w.name)
+                    cuda = _extract_cuda_local(w.name)
+                    if abi and cuda:
+                        pre_built.append(f"{abi}+{cuda}")
+                    ts = _parse_torch_tag(_extract_torch_tag(w.name))
+                    if ts and (max_torch_sa is None or _ver(ts) > _ver(max_torch_sa)):
+                        max_torch_sa = ts
+            result["available"]["sageattention"][ver] = {
+                "max_torch": max_torch_sa,
+                "pre_built": list(dict.fromkeys(pre_built)),
+            }
+    except Exception as e:
+        print(f"[probe] fetch_compat_data SA tags failed: {e}", file=sys.stderr)
+
+    # ── flash-attn versions from GitHub (2.x series only) ────────────────────
+    try:
+        releases = ai_lib_github.get_releases(FLASH_REPO, count=25)
+        for rel in releases:
+            raw_tag = rel.get("tag_name", "")
+            if not raw_tag.startswith("v2."):
+                continue
+            tag = raw_tag.lstrip("v")
+            pre_built = []
+            for asset in rel.get("assets", []):
+                name = asset.get("name", "")
+                if not (name.endswith(".whl") and "flash_attn" in name.lower()):
+                    continue
+                abi  = _extract_abi_tag(name)
+                cuda = _extract_cuda_local(name)
+                if abi and cuda:
+                    pre_built.append(f"{abi}+{cuda}")
+            result["available"]["flash_attn"][tag] = {
+                "max_torch": None,
+                "pre_built": list(dict.fromkeys(pre_built)),
+            }
+    except Exception as e:
+        print(f"[probe] fetch_compat_data flash-attn GitHub failed: {e}", file=sys.stderr)
+
+    # ── pip dry-runs for ComfyUI ──────────────────────────────────────────────
+    active_target = config.get("active_target", "")
+    apps_subdir   = config.get("apps_subdir", "AI_Apps")
+    if active_target:
+        venv_py = (Path(active_target) / apps_subdir
+                   / "ComfyUI" / "venv" / "bin" / "python")
+        if venv_py.exists():
+            # SA local wheel + downgrade torch to 2.7.1
+            # SA 2.2.0 is not on PyPI — use local cached wheel if available
+            wheels_drive = config.get("wheels_drive", "/mnt/BACKUP_4.0_TB")
+            cp312_dir    = (Path(wheels_drive)
+                            / "AI_Collected_Wheels" / "localbuild" / "cp312")
+            sa_wheels    = _scan_wheels(cp312_dir, "sageattention", "cp312")
+            if sa_wheels:
+                result["pip_dry_runs"]["comfyui:sa220_torch271"] = _pip_dry_run(
+                    venv_py,
+                    [str(sa_wheels[0]), f"torch==2.7.1+{torch_cuda}",
+                     "--no-build-isolation"],
+                    extra_index=torch_index,
+                )
+            else:
+                result["pip_dry_runs"]["comfyui:sa220_torch271"] = {
+                    "skipped": "no local SA wheel for cp312"
+                }
+            # SA latest with current torch (source build attempt)
+            result["pip_dry_runs"]["comfyui:keep_current_torch"] = _pip_dry_run(
+                venv_py,
+                ["sageattention", "--no-build-isolation"],
+            )
+
+    return result
+
 
 # =============================================================================
 # Main

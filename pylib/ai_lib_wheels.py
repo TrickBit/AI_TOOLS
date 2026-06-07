@@ -205,13 +205,17 @@ def _best_wheel(directory: Path, pkg: str, torch_ver: str,
                 cuda: str, python: str) -> Path | None:
     """
     Return the best matching wheel in a directory, or None.
+    Checks both the directory itself and a python ABI subdir (e.g. cp312/).
     'Best' = most recent by filename sort (version numbers sort naturally).
     """
     if not directory.exists():
         return None
+    # Check ABI subdir first (e.g. localbuild/cp312/) then root
+    search_dirs = [directory / python, directory]
     matches = [
-        f for f in directory.iterdir()
-        if _wheel_matches(f.name, pkg, torch_ver, cuda, python)
+        f for d in search_dirs if d.exists()
+        for f in d.iterdir()
+        if f.is_file() and _wheel_matches(f.name, pkg, torch_ver, cuda, python)
     ]
     if not matches:
         return None
@@ -459,7 +463,8 @@ def _cli_install(args: list[str]) -> int:
         return 2
 
     pkg        = ns.pkg
-    torch_ver  = ns.torch
+    # Strip to major.minor only — wheel filenames use "torch29" not "torch291"
+    torch_ver  = ".".join(ns.torch.split("+")[0].split(".")[:2])
     cuda       = ns.cuda
     python_tag = ns.python
     venv_dir   = Path(ns.venv)

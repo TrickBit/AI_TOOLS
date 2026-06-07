@@ -1015,6 +1015,24 @@ def probe_torch_constraints(target: str, config: dict, probe: dict) -> None:
     except Exception as e:
         warn(f"probe_torch_constraints failed: {e}")
 
+    # compat_cache staleness (7 days — separate from 24h probe_cache)
+    _all_data    = ai_config.load_all()
+    compat_ts    = _all_data.get("compat_cache", {}).get("fetched_at")
+    compat_fresh = False
+    if compat_ts:
+        try:
+            compat_age   = datetime.now(timezone.utc) - datetime.fromisoformat(compat_ts)
+            compat_fresh = compat_age < timedelta(days=7)
+        except ValueError:
+            pass
+    if not compat_fresh:
+        info("Refreshing compatibility data...")
+        try:
+            compat = ai_lib_probe.fetch_compat_data(config, probe)
+            ai_config.write_compat_cache(compat)
+        except Exception as e:
+            warn(f"Could not refresh compatibility data: {e}")
+
 
 _PRE_POST_REGISTRY: dict[str, Callable] = {
     "probe_torch_constraints": probe_torch_constraints,
@@ -1054,51 +1072,198 @@ def dispatch_app(app: str, state: dict) -> None:
             _run_installer(app)
     elif app_state == "sa_rebuild":
         print()
-        info("SageAttention in ComfyUI venv is broken and needs a rebuild.")
-        warn(state.get("reason", ""))
-        try:
-            confirm = input("  Rebuild SageAttention now? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return
-        if confirm != "y":
-            return
+        _full   = ai_config.load_all()
+        _cfg    = _full.get("config", {})
+        _prb    = _full.get("probe", {})
+        _tgt    = _cfg.get("active_target", "")
+        _inst   = (_full.get("targets", {}).get(_tgt, {})
+                   .get("installed", {}).get("comfyui", {}))
+        _pcache = _prb.get("probe_cache", {})
+        _compat = _full.get("compat_cache", {})
+
+        cur_torch   = _inst.get("torch", "unknown")
+        sa_status   = _pcache.get("sa_comfyui_status", "unknown")
+        torch_cuda  = _prb.get("gpu", {}).get("torch_cuda", "cu130")
+        torch_idx   = _prb.get("gpu", {}).get(
+            "torch_index", f"https://download.pytorch.org/whl/{torch_cuda}"
+        )
         venv_python = state.get("venv_python")
-        if not venv_python:
-            err("No venv python found — cannot rebuild SA.")
+        torch_ver   = cur_torch.split("+")[0] if cur_torch != "unknown" else "unknown"
+
+        sa_avail   = _compat.get("available", {}).get("sageattention", {})
+        fa_avail   = _compat.get("available", {}).get("flash_attn", {})
+        has_compat = bool(sa_avail or fa_avail)
+
+        # Check flash-attn installed in ComfyUI venv
+        fa_installed: str | None = None
+        if venv_python:
+            try:
+                _fa_show = subprocess.run(
+                    [venv_python, "-m", "pip", "show", "flash_attn"],
+                    capture_output=True, text=True, timeout=10
+                )
+                for _ln in _fa_show.stdout.splitlines():
+                    if _ln.startswith("Version:"):
+                        fa_installed = _ln.split(":", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+
+        # ── Fallback: compat_cache not populated yet ──────────────────────────
+        if not has_compat:
+            warn("SageAttention is broken in the ComfyUI venv.")
+            warn(state.get("reason", ""))
+            info("Run 'Install / manage apps' once to populate compatibility data.")
+            print()
+            try:
+                _fc = input("  Skip SA for this session? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if _fc == "y":
+                _ex = ai_config.load_all().get("probe", {}).get("probe_cache", {})
+                _ex["sa_comfyui_status"]    = "skipped"
+                _ex["torch_constraints_at"] = datetime.now(timezone.utc).isoformat()
+                ai_config.write_probe_cache(_ex)
+                good("SageAttention skipped for this session.")
             return
-        info("Uninstalling old SageAttention...")
+
+        # ── Decision summary ──────────────────────────────────────────────────
+        def _vt(v: str) -> tuple:
+            try:    return tuple(int(x) for x in v.split("."))
+            except: return (0,)  # noqa: E722
+
+        print(f"  SageAttention — ComfyUI (cp312 / {torch_ver}+{torch_cuda})")
+        print(f"  {'─' * 53}")
+
+        if sa_avail:
+            _first = True
+            for _ver in sorted(sa_avail, key=_vt, reverse=True):
+                _pre   = sa_avail[_ver].get("pre_built", [])
+                _cp312 = [p for p in _pre if p.startswith("cp312")]
+                if _cp312:
+                    _note = f"cp312 wheel: {', '.join(_cp312)}"
+                else:
+                    _other = [p for p in _pre if p.startswith("cp")]
+                    _note  = (f"{', '.join(_other[:2])} only — no cp312 wheel"
+                               if _other else "no pre-built wheels")
+                _lbl = "SA available:" if _first else " " * 13
+                print(f"  {_lbl:13s}  {_ver} ({_note})")
+                _first = False
+        else:
+            print( "  SA available:    (no data)")
+
+        if fa_installed:
+            print(f"  flash-attn:      {fa_installed} installed and working")
+        elif fa_avail:
+            _fa_top = sorted(fa_avail, key=_vt, reverse=True)
+            print(f"  flash-attn:      {_fa_top[0]} available (not installed)")
+        else:
+            print( "  flash-attn:      unknown")
+
+        _smap = {
+            "broken_symbol": "broken (undefined symbol — built against old torch)",
+            "broken_import": "broken (import error)",
+            "not_installed": "not installed",
+        }
+        print(f"  Current SA:      {_smap.get(sa_status, sa_status)}")
         print()
+        print( "  Options:")
+        print( "   1. Downgrade torch to 2.7.1 + install SA 2.2.0 from source")
+        print( "      (SA works, ~10-15% slower than current torch, long compile)")
+        print( "   2. Skip SA — keep torch, flash-attn active")
+        _fa_note = (f"flash-attn {fa_installed} active" if fa_installed
+                    else "no SA or flash-attn")
+        print(f"      ({_fa_note} — recommended for now)")
+        print( "   3. Wait — do nothing, check back when SA 2.3 releases")
+        print()
+
         try:
-            subprocess.run(
-                [venv_python, "-m", "pip", "uninstall", "sageattention", "-y"],
-                env={**os.environ}
-            )
+            choice = input("  Choose [1/2/3] or Enter to cancel: ").strip()
+        except (EOFError, KeyboardInterrupt):
             print()
-            info("Building SageAttention 2.0.1...")
+            return
+        if choice not in ("1", "2", "3"):
+            return
+        if choice == "3":
+            return
+
+        if choice == "1":
+            if not venv_python:
+                err("No venv python found — cannot install SA.")
+                return
             print()
-            result = subprocess.run(
-                [venv_python, "-m", "pip", "install", "sageattention==2.0.1",
-                 "--no-build-isolation"],
-                env={**os.environ}
-            )
+            warn("SA 2.2.0 is not on PyPI — this will build from git source.")
+            warn(f"  Step 1: downgrade torch to 2.7.1+{torch_cuda}")
+            warn( "  Step 2: build SageAttention from github.com/thu-ml/SageAttention")
+            warn( "  Requires: nvcc + gcc-12.  Compile time: 10-20 minutes.")
             print()
-            if result.returncode == 0:
-                good("SageAttention rebuild complete.")
-                _collect_wheels_from_venv("comfyui")
-                _data   = ai_config.load_all()
-                _cfg    = _data.get("config", {})
-                _prb    = _data.get("probe", {})
-                _tgt    = _cfg.get("active_target", "")
-                try:
-                    cache = ai_lib_probe.probe_sage_flash_torch(_cfg, _prb, _tgt)
-                    ai_config.write_probe_cache(cache)
-                    info("SA probe cache updated.")
-                except Exception as e:
-                    warn(f"Could not update probe cache: {e}")
-            else:
-                err(f"SageAttention rebuild failed (exit {result.returncode}).")
-        except OSError as e:
-            err(f"Could not rebuild SageAttention: {e}")
+            try:
+                _c2 = input("  Proceed? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if _c2 != "y":
+                return
+            print()
+            info(f"Step 1/2  Installing torch 2.7.1+{torch_cuda}...")
+            print()
+            try:
+                _r1 = subprocess.run(
+                    [venv_python, "-m", "pip", "install",
+                     f"torch==2.7.1+{torch_cuda}",
+                     "--index-url", torch_idx],
+                    env={**os.environ}
+                )
+                print()
+                if _r1.returncode != 0:
+                    err(f"torch install failed (exit {_r1.returncode}).")
+                    return
+                info("Step 2/2  Building SageAttention from source...")
+                print()
+                _r2 = subprocess.run(
+                    [venv_python, "-m", "pip", "install",
+                     "git+https://github.com/thu-ml/SageAttention.git",
+                     "--no-build-isolation"],
+                    env={**os.environ}
+                )
+                print()
+                if _r2.returncode == 0:
+                    good("SageAttention installed.")
+                    _collect_wheels_from_venv("comfyui")
+                    try:
+                        _tv = subprocess.run(
+                            [venv_python, "-c",
+                             "import torch; print(torch.__version__)"],
+                            capture_output=True, text=True
+                        ).stdout.strip()
+                        if _tv:
+                            ai_config.set("app", "comfyui", "torch", value=_tv)
+                    except Exception:
+                        pass
+                    _d3 = ai_config.load_all()
+                    _c3 = _d3.get("config", {})
+                    _p3 = _d3.get("probe", {})
+                    _t3 = _c3.get("active_target", "")
+                    try:
+                        cache = ai_lib_probe.probe_sage_flash_torch(_c3, _p3, _t3)
+                        ai_config.write_probe_cache(cache)
+                        info("SA probe cache updated.")
+                    except Exception as e:
+                        warn(f"Could not update probe cache: {e}")
+                else:
+                    err(f"SageAttention build failed (exit {_r2.returncode}).")
+            except OSError as e:
+                err(f"Install error: {e}")
+
+        elif choice == "2":
+            _ex = ai_config.load_all().get("probe", {}).get("probe_cache", {})
+            _ex["sa_comfyui_status"]    = "skipped"
+            _ex["torch_constraints_at"] = datetime.now(timezone.utc).isoformat()
+            ai_config.write_probe_cache(_ex)
+            _fa_msg = f"flash-attn {fa_installed}" if fa_installed else "flash-attn"
+            good(f"SageAttention skipped. {_fa_msg} will be used.")
+            info("SA will be re-checked on next session (24h).")
     else:
         warn(f"Unknown state '{app_state}' for {app} — nothing to do.")
 

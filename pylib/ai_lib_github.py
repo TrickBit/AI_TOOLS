@@ -179,6 +179,28 @@ def get_releases(owner_repo: str, count: int = 5) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def get_tags(owner_repo: str, count: int = 20) -> list[dict]:
+    """
+    Return up to `count` tags for a repo.
+    Each dict has at least: name (tag name).
+    Returns empty list on error.
+    """
+    url  = f"{_API_BASE}/repos/{owner_repo}/tags?per_page={count}"
+    data = _get(url)
+    return data if isinstance(data, list) else []
+
+
+def get_release_by_tag(owner_repo: str, tag: str) -> dict | None:
+    """
+    Return the release associated with a specific tag, or None if none exists.
+    Each dict contains tag_name and assets (list of {name, browser_download_url}).
+    Returns None on 404 (tag exists but has no release) or any other error.
+    """
+    url  = f"{_API_BASE}/repos/{owner_repo}/releases/tags/{tag}"
+    data = _get(url)
+    return data if isinstance(data, dict) else None
+
+
 def get_release_assets(owner_repo: str) -> list[str]:
     """
     Return a list of asset filenames from the latest release of a repo.

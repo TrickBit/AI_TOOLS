@@ -282,13 +282,15 @@ Organise: `ai_tools wheels organise [--dry-run]`
 |---|---|---|
 | Wan2GP | cp311 | ✔ 2.2.0+cu130 cached |
 | FramePack | cp311 | ✔ 2.2.0+cu130 cached |
-| ComfyUI | cp312 | ✗ incompatible with torch 2.12 — pending SA 2.3 |
+| ComfyUI | cp312 | ✗ incompatible with torch 2.9.1 — pending SA 2.3; flash-attn 2.8.3 ✔ working |
 | InvokeAI | cp311 | not attempted |
 | A1111 | cp310 | not applicable (pinned cu121) |
 
-Torch constraint probing (dynamic detection of best torch/SA pairing before
-install) is planned — currently ComfyUI steps down to torch 2.9.1 when SA 2.2.0
-is detected as incompatible.
+`probe_sage_flash_torch()` in `ai_lib_probe.py` detects SA/flash-attn wheel
+availability and venv health. Result stored in `probe.probe_cache{}` — stale
+after 24h or driver change. Bash installers read via `ai_config.py get system
+probe_cache`. If SA is broken in the ComfyUI venv, `detect_app_state()` returns
+`state="sa_rebuild"` and the installer offers a targeted rebuild.
 
 ---
 
@@ -301,9 +303,9 @@ never offer torch rebuild. `webui.sh` needs `KEEP_GOING=${AI_INSTALLER_MODE:-1}`
 No pip binary — use `python -m pip`. Torch constrained below system CUDA via
 app's `torch~=x.y.z` pin. `resolve_torch_for_app()` handles this automatically.
 
-**ComfyUI ops.py patch:** `comfy/ops.py` contains a threshold value that causes
-NaN/black output on RTX 3060. Patched to `1e-7` after every `git pull`.
-Runner checks patch is in place before launch.
+**ComfyUI ops.py patch:** Obsolete since ComfyUI 0.24. The RTX 3060 NaN/black
+output issue is now handled upstream via dtype selection policy and modern SDPA
+kernels. The patch check has been removed from the runner.
 
 **ComfyUI-LTXVideo kornia patch:** `pyramid_blending.py` needs `pad` imported
 from `torch.nn.functional` not kornia (removed in kornia 0.8.3). Must survive

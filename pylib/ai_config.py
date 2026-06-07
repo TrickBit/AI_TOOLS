@@ -120,6 +120,14 @@ def _skeleton() -> dict:
             },
         },
         "targets": {},
+        "compat_cache": {
+            "fetched_at": None,
+            "available": {
+                "sageattention": {},
+                "flash_attn":    {},
+            },
+            "pip_dry_runs": {},
+        },
     }
 
 
@@ -410,6 +418,16 @@ def write_probe_cache(cache: dict) -> bool:
     """
     data     = _load()
     new_data = _bury(data, ["probe", "probe_cache"], cache)
+    return _save(new_data)
+
+
+def write_compat_cache(cache: dict) -> bool:
+    """
+    Write (replace) the top-level compat_cache{} section.
+    Called by ai_installer.py probe_torch_constraints hook.
+    """
+    data     = _load()
+    new_data = _bury(data, ["compat_cache"], cache)
     return _save(new_data)
 
 
