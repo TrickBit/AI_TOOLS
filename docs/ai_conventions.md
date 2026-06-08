@@ -345,6 +345,42 @@ kornia 0.8.3). Must survive `git pull` — pending wire into postinstaller.
 ### Flash-attn / Nunchaku / llama.cpp
 Non-fatal expected failures. Managed by `ai_lib_optional.py`.
 
+### ComfyUI model directory mapping
+ComfyUI's canonical model directory map lives in `comfy/folder_paths.py` inside
+the ComfyUI install. Never hardcode model type → directory mappings — always
+derive them from this file.
+
+`pylib/ai_comfy_model_map.py` parses `folder_paths.py` and writes a JSON recipe:
+```
+AI_Tools/ai_comfy_model_map.json   ← generated, not committed
+```
+Regenerate when ComfyUI updates or install path changes:
+```bash
+python3 pylib/ai_comfy_model_map.py --comfyui /mnt/.../ComfyUI
+```
+All model linking (postinstaller, workflow prep, resourcelib scan) reads this
+JSON rather than importing ComfyUI code directly.
+
+### ComfyUI workflow preparation
+`pylib/ai_workflow_prep.py` — standalone script, no AI_Tools dependencies.
+Parses a workflow JSON, finds best available model variants for the current
+system VRAM, hardlinks them into ComfyUI's correct dirs, patches the JSON.
+Cross-filesystem hardlink fails → prompts to use symlink instead (warn that
+ComfyUI symlink support may vary).
+```bash
+python3 pylib/ai_workflow_prep.py \
+    --workflow path/to/workflow.json \
+    --comfyui /mnt/.../ComfyUI \
+    --shared /mnt/.../AI-Shared-Resources \
+    --vram 12
+```
+
+### Compat cache
+`probe.compat_cache{}` in `ai_installer.json` stores SA/flash-attn availability
+per Python ABI. Refreshed every 7 days or on driver change. Written by
+`ai_lib_probe.fetch_compat_data()`, read by `dispatch_app()` sa_rebuild branch
+to show informed options before attempting any SA install.
+
 ---
 
 ## Adding a New App

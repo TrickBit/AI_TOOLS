@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-06-08T00:29:13.253634+00:00",
+  "comfyui_version": "0.24.0",
+  "comfyui_path": "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI",
+  "model_dirs": {
+    "checkpoints": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/checkpoints"
+    ],
+    "configs": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/configs"
+    ],
+    "loras": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/loras"
+    ],
+    "vae": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/vae"
+    ],
+    "text_encoders": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/text_encoders",
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/clip"
+    ],
+    "diffusion_models": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/unet",
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/diffusion_models"
+    ],
+    "clip_vision": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/clip_vision"
+    ],
+    "style_models": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/style_models"
+    ],
+    "embeddings": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/embeddings"
+    ],
+    "diffusers": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/diffusers"
+    ],
+    "vae_approx": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/vae_approx"
+    ],
+    "controlnet": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/controlnet",
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/t2i_adapter"
+    ],
+    "gligen": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/gligen"
+    ],
+    "upscale_models": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/upscale_models"
+    ],
+    "latent_upscale_models": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/latent_upscale_models"
+    ],
+    "custom_nodes": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/custom_nodes"
+    ],
+    "hypernetworks": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/hypernetworks"
+    ],
+    "photomaker": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/photomaker"
+    ],
+    "classifiers": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/classifiers"
+    ],
+    "model_patches": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/model_patches"
+    ],
+    "audio_encoders": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/audio_encoders"
+    ],
+    "background_removal": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/background_removal"
+    ],
+    "frame_interpolation": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/frame_interpolation"
+    ],
+    "geometry_estimation": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/geometry_estimation"
+    ],
+    "optical_flow": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/optical_flow"
+    ],
+    "detection": [
+      "/mnt/BACKUP_4.0_TB/AI_Apps/ComfyUI/models/detection"
+    ]
+  },
+  "node_type_to_category": {
+    "UNETLoader": "diffusion_models",
+    "UnetLoaderGGUF": "diffusion_models",
+    "DiffusionModelLoader": "diffusion_models",
+    "CheckpointLoaderSimple": "checkpoints",
+    "CheckpointLoader": "checkpoints",
+    "ImageOnlyCheckpointLoader": "checkpoints",
+    "VAELoader": "vae",
+    "VAELoaderKJ": "vae",
+    "CLIPLoader": "text_encoders",
+    "DualCLIPLoader": "text_encoders",
+    "LoraLoader": "loras",
+    "LoraLoaderModelOnly": "loras",
+    "UpscaleModelLoader": "upscale_models",
+    "CLIPVisionLoader": "clip_vision",
+    "AudioVAELoader": "audio_encoders",
+    "LowVramAudioVAELoader": "audio_encoders",
+    "LTXVAudioVAELoader": "audio_encoders",
+    "WanVideoModelLoader": "diffusion_models",
+    "WanVideoLoraSelectMulti": "loras",
+    "WanVideoVAELoader": "vae",
+    "WanVideoTextEncodeCached": "text_encoders",
+    "DownloadAndLoadSAM2Model": "detection"
+  }
+}

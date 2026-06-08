@@ -129,6 +129,7 @@ apply_ops_patch() {
 # is left alone (user may have customised it).
 # =============================================================================
 write_extra_model_paths() {
+    return 0
     local yaml_file="${INSTALL_DIR}/extra_model_paths.yaml"
 
     step "Writing extra_model_paths.yaml"

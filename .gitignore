@@ -12,3 +12,7 @@ git_extra.sh
 mk_wheels.py
 collected.txt
 out.txt
+*.png
+*.mp4
+*.jpg
+
